@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Block Grid 8x8 (Test Build)</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1d2330;--cell:#e1e5ec;--panel:#fff;--c:42px;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171a21;--fg:#e8ebf2;--cell:#2a2f3b;--panel:#222733}}
+:root[data-theme="dark"]{--bg:#171a21;--fg:#e8ebf2;--cell:#2a2f3b;--panel:#222733}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px}
+h1{font-size:20px;margin:0}
+#board{display:grid;grid-template-columns:repeat(8,var(--c));gap:3px;background:var(--panel);padding:8px;border-radius:10px;touch-action:manipulation}
+.cell{width:var(--c);height:var(--c);background:var(--cell);border-radius:5px}
+.cell.ok{outline:3px solid #2ecc71;outline-offset:-3px}
+.cell.bad{outline:3px solid #e74c3c;outline-offset:-3px}
+.row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
+button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid #8886;background:var(--panel);color:var(--fg);cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+#palette{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:460px}
+.tile{display:grid;gap:2px;background:var(--panel);padding:8px;border-radius:8px;border:2px solid transparent;cursor:pointer;justify-content:center;align-content:center;min-width:34px;min-height:34px}
+.tile.sel{border-color:#3498db}
+.tile i{width:14px;height:14px;border-radius:3px;display:block}
+#msg{min-height:1.2em;font-weight:600}
+small{opacity:.7}
+</style></head><body>
+<h1>Block Grid 8x8 <small>test build</small></h1>
+<div class="row"><span>Score: <b id="score">0</b></span><span id="msg"></span></div>
+<div id="board"></div>
+<div class="row"><span>Pick a shape, then place it (all shapes always available):</span></div><div id="palette"></div>
+<div class="row">
+<button id="rot">Rotate (R)</button><button id="undo">Undo (Z)</button><button id="redo">Redo (Y)</button><button id="new">New game</button>
+</div>
+<small>Hover the board to preview, click to place. Rotate (R) turns the selected shape in the palette.</small>
+<script>
+const N=8;
+// Shapes as row strings; X = filled. Rotations (90/180/270) are generated automatically.
+const SHAPES={
+ single:{c:"#f1c40f",g:["X"]},
+ line2:{c:"#e67e22",g:["XX"]},
+ line3:{c:"#e74c3c",g:["XXX"]},
+ line4:{c:"#9b59b6",g:["XXXX"]},
+ line5:{c:"#3498db",g:["XXXXX"]},
+ L:{c:"#1abc9c",g:["..X","XXX"]},
+ T:{c:"#e84393",g:[".X.","XXX"]},
+ square:{c:"#2ecc71",g:["XX","XX"]},
+ rect3x2:{c:"#fd79a8",g:["XXX","XXX"]},
+ big3x3:{c:"#6c5ce7",g:["XXX","XXX","XXX"]},
+ mirrorL:{c:"#00b894",g:["X..","XXX"]},
+ bend1:{c:"#d63031",g:["X.","XX",".X"]},
+ bend2:{c:"#0984e3",g:[".X","XX","X."]}
+};
+const norm=cs=>{const mr=Math.min(...cs.map(p=>p[0])),mc=Math.min(...cs.map(p=>p[1]));return cs.map(([r,c])=>[r-mr,c-mc]).sort((a,b)=>a[0]-b[0]||a[1]-b[1])};
+const rot=cs=>norm(cs.map(([r,c])=>[c,-r]));
+for(const s of Object.values(SHAPES)){
+ let cs=[];s.g.forEach((row,r)=>[...row].forEach((ch,c)=>{if(ch==="X")cs.push([r,c])}));
+ cs=norm(cs);const seen=new Set(),o=[];
+ for(let i=0;i<4;i++){const k=JSON.stringify(cs);if(!seen.has(k)){seen.add(k);o.push(cs)}cs=rot(cs)}
+ s.o=o;
+}
+const size=cs=>[Math.max(...cs.map(p=>p[0]))+1,Math.max(...cs.map(p=>p[1]))+1];
+const fits=(cs,r,c,b)=>cs.every(([dr,dc])=>{const y=r+dr,x=c+dc;return y>=0&&y<N&&x>=0&&x<N&&!b[y][x]});
+const canPlace=(cs,b)=>{for(let r=0;r<N;r++)for(let c=0;c<N;c++)if(fits(cs,r,c,b))return true;return false};
+
+let board,sel="single",orient={},score,undoS,redoS,hover=null,over=false;
+const clone=b=>b.map(r=>r.slice());
+const snap=()=>({board:clone(board),score});
+const restore=s=>{board=clone(s.board);score=s.score;over=false};
+
+const curCS=()=>SHAPES[sel].o[orient[sel]||0];
+const anyFits=()=>Object.values(SHAPES).some(s=>s.o.some(cs=>canPlace(cs,board)));
+function reset(){
+ board=Array.from({length:N},()=>Array(N).fill(null));
+ score=0;undoS=[];redoS=[];over=false;render();
+}
+function place(r,c){
+ if(over)return;
+ const sh=SHAPES[sel],cs=curCS();
+ if(!fits(cs,r,c,board))return;
+ undoS.push(snap());redoS=[];
+ cs.forEach(([dr,dc])=>board[r+dr][c+dc]=sh.c);
+ score+=cs.length;
+ const rows=[],cols=[];
+ for(let i=0;i<N;i++){
+  if(board[i].every(Boolean))rows.push(i);
+  if(board.every(row=>row[i]))cols.push(i);
+ }
+ rows.forEach(i=>{for(let x=0;x<N;x++)board[i][x]=null});
+ cols.forEach(i=>{for(let y=0;y<N;y++)board[y][i]=null});
+ score+=(rows.length+cols.length)*N;
+ over=!anyFits();
+ render();
+}
+const undo=()=>{if(!undoS.length)return;redoS.push(snap());restore(undoS.pop());render()};
+const redo=()=>{if(!redoS.length)return;undoS.push(snap());restore(redoS.pop());render()};
+const rotate=()=>{if(over)return;orient[sel]=((orient[sel]||0)+1)%SHAPES[sel].o.length;render()};
+
+const boardEl=document.getElementById("board"),cells=[];
+for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+ const d=document.createElement("div");d.className="cell";
+ d.onmouseenter=()=>{hover=[r,c];render()};
+ d.onclick=()=>{hover=[r,c];place(...anchor(r,c))};
+ cells.push(d);boardEl.appendChild(d);
+}
+boardEl.onmouseleave=()=>{hover=null;render()};
+function anchor(r,c){ // center the piece on the cursor
+ const [h,w]=size(curCS());
+ return [r-Math.floor(h/2),c-Math.floor(w/2)];
+}
+function render(){
+ const prev=new Map();let valid=false;
+ if(hover&&!over){
+  const [ar,ac]=anchor(...hover),cs=curCS();valid=fits(cs,ar,ac,board);
+  cs.forEach(([dr,dc])=>prev.set((ar+dr)*N+ac+dc,1));
+ }
+ cells.forEach((d,i)=>{
+  const v=board[Math.floor(i/N)][i%N];
+  d.style.background=v||"";
+  d.className="cell"+(prev.has(i)&&Math.floor(i/N)<N?(valid?" ok":" bad"):"");
+ });
+ const pe=document.getElementById("palette");pe.innerHTML="";
+ for(const [name,sh] of Object.entries(SHAPES)){
+  const cs=sh.o[orient[name]||0],[h,w]=size(cs),b=document.createElement("div");
+  b.className="tile"+(name===sel?" sel":"");
+  b.style.gridTemplateColumns=`repeat(${w},14px)`;
+  const set=new Set(cs.map(p=>p[0]*w+p[1]));
+  for(let i=0;i<h*w;i++){const d=document.createElement("i");if(set.has(i))d.style.background=sh.c;b.appendChild(d)}
+  b.onclick=()=>{sel=name;render()};
+  pe.appendChild(b);
+ }
+ document.getElementById("score").textContent=score;
+ document.getElementById("msg").textContent=over?"Game over: no shape fits. Undo or start a new game.":"";
+ document.getElementById("undo").disabled=!undoS.length;
+ document.getElementById("redo").disabled=!redoS.length;
+}
+document.getElementById("undo").onclick=undo;
+document.getElementById("redo").onclick=redo;
+document.getElementById("rot").onclick=rotate;
+document.getElementById("new").onclick=reset;
+addEventListener("keydown",e=>{const k=e.key.toLowerCase();if(k==="z")undo();else if(k==="y")redo();else if(k==="r")rotate()});
+reset();
+</script></body></html>
